@@ -1,0 +1,32 @@
+#include <windows.h>
+
+1 RT_MANIFEST "app.manifest"
+1 ICON "app_icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "Folder Icon Tool"
+            VALUE "FileDescription", "Folder Icon Tool"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "FolderIconTool"
+            VALUE "OriginalFilename", "FolderIconTool.exe"
+            VALUE "ProductName", "Folder Icon Tool"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END
