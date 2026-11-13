@@ -1,5 +1,7 @@
 # 文件夹图标助手 · Folder Icon Tool
 
+该程序使用Kimi K3.1Pro 和DeepSeek V4.1Flash 1017制作
+
 把 Windows 文件夹的图标换成任意 `*.exe` 的图标，让上一层目录里的文件夹一眼就能看出里面装的是什么，而不是只能靠名字区分。
 
 纯 Win32 / C 实现，编译产物是 **约 55 KB 的单文件 EXE**，不依赖 Python、.NET、VC++ 运行库，也不写注册表。
