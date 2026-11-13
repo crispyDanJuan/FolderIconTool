@@ -10,6 +10,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,8 +27,12 @@
 #define PATH_CAP 32768
 #define MAX_ICON_IMAGES 256
 #define MAX_INI_SIZE (4 * 1024 * 1024)
+#define MAX_ICON_BYTES (16 * 1024 * 1024)
 #define WINDOW_CLASS L"FolderIconToolNativeWindow"
 #define APP_TITLE L"文件夹图标助手"
+/* 改版本号时同步修改 app.rc 里的 FILEVERSION / FileVersion。 */
+#define APP_VERSION L"1.0.1"
+#define APP_WINDOW_TITLE L"文件夹图标助手  v" APP_VERSION
 
 #define ID_FOLDER 101
 #define ID_EXE 102
@@ -265,6 +270,29 @@ static BYTE *read_resource(HMODULE module, LPCWSTR name, LPCWSTR type, DWORD *si
     return result;
 }
 
+static void image_dimensions(const BYTE *data, DWORD size, WORD *width, WORD *height)
+{
+    *width = 0;
+    *height = 0;
+    if (!data || size < 8)
+        return;
+    if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
+        if (size < 24)
+            return;
+        *width = (WORD)(((DWORD)data[16] << 24) | ((DWORD)data[17] << 16) |
+                        ((DWORD)data[18] << 8) | data[19]);
+        *height = (WORD)(((DWORD)data[20] << 24) | ((DWORD)data[21] << 16) |
+                         ((DWORD)data[22] << 8) | data[23]);
+        return;
+    }
+    if (size >= 16 && read_u32(data, 0) >= 40) {
+        DWORD bitmapWidth = read_u32(data, 4);
+        DWORD bitmapHeight = read_u32(data, 8) / 2;
+        *width = (WORD)(bitmapWidth > 0xFFFF ? 0 : bitmapWidth);
+        *height = (WORD)(bitmapHeight > 0xFFFF ? 0 : bitmapHeight);
+    }
+}
+
 static BOOL extract_icon_file(const wchar_t *path, ExtractedIcon *out, wchar_t *error, size_t errorCap)
 {
     HMODULE module;
@@ -326,18 +354,16 @@ static BOOL extract_icon_file(const wchar_t *path, ExtractedIcon *out, wchar_t *
     total = (DWORD)(6 + count * 16);
     for (i = 0; i < count; i++) {
         size_t entry = (size_t)(6 + i * 14);
-        DWORD imageSize = read_u32(group, entry + 8);
         WORD resourceId = read_u16(group, entry + 12);
+        WORD actualWidth = 0;
+        WORD actualHeight = 0;
         BYTE *image;
-        if (imageSize == 0 || imageSize > MAX_INI_SIZE) {
-            free_icon(&result);
-            free(group);
-            FreeLibrary(module);
-            set_error(error, errorCap, L"图标图像数据异常。");
-            return FALSE;
-        }
-        image = read_resource(module, MAKEINTRESOURCEW(resourceId), MAKEINTRESOURCEW(RT_ICON), &result.images[i].size);
-        if (!image || result.images[i].size != imageSize) {
+
+        /* 部分程序的图标组声明字节数与实际资源大小不一致（aDrive.exe 就是如此），
+           因此以资源实际大小、并以图像头记录的尺寸为准，声明值仅作兜底。 */
+        image = read_resource(module, MAKEINTRESOURCEW(resourceId), MAKEINTRESOURCEW(RT_ICON),
+                              &result.images[i].size);
+        if (!image || !result.images[i].size || result.images[i].size > MAX_ICON_BYTES) {
             free(image);
             free_icon(&result);
             free(group);
@@ -346,13 +372,18 @@ static BOOL extract_icon_file(const wchar_t *path, ExtractedIcon *out, wchar_t *
             return FALSE;
         }
         result.images[i].data = image;
-        result.images[i].width = group[entry] ? group[entry] : 256;
-        result.images[i].height = group[entry + 1] ? group[entry + 1] : 256;
+        image_dimensions(image, result.images[i].size, &actualWidth, &actualHeight);
+        if (!actualWidth || !actualHeight) {
+            actualWidth = group[entry] ? group[entry] : 256;
+            actualHeight = group[entry + 1] ? group[entry + 1] : 256;
+        }
+        result.images[i].width = actualWidth;
+        result.images[i].height = actualHeight;
         if (result.images[i].width > result.maxWidth)
             result.maxWidth = result.images[i].width;
         if (result.images[i].height > result.maxHeight)
             result.maxHeight = result.images[i].height;
-        total += imageSize;
+        total += result.images[i].size;
     }
     result.count = count;
 
@@ -372,6 +403,8 @@ static BOOL extract_icon_file(const wchar_t *path, ExtractedIcon *out, wchar_t *
         size_t entry = (size_t)(6 + i * 14);
         size_t target = (size_t)(6 + i * 16);
         CopyMemory(ico + target, group + entry, 8);
+        ico[target] = result.images[i].width >= 256 ? 0 : (BYTE)result.images[i].width;
+        ico[target + 1] = result.images[i].height >= 256 ? 0 : (BYTE)result.images[i].height;
         write_u32(ico, target + 8, result.images[i].size);
         write_u32(ico, target + 12, offset);
         CopyMemory(ico + offset, result.images[i].data, result.images[i].size);
@@ -480,9 +513,11 @@ static BOOL write_text_file(const wchar_t *path, const wchar_t *text, TextEncodi
         if (bytes <= 0)
             return FALSE;
         payloadSize = (DWORD)(bytes - 1 + bom);
-        payload = (BYTE *)malloc(payloadSize ? payloadSize : 1);
+        /* WideCharToMultiByte 会在末尾写入一个 NUL，因此多留 1 字节，避免越界写坏堆。 */
+        payload = (BYTE *)malloc((size_t)payloadSize + 1);
         if (!payload)
             return FALSE;
+        payload[payloadSize] = 0;
         if (bom) {
             payload[0] = 0xEF;
             payload[1] = 0xBB;
@@ -864,28 +899,58 @@ static void show_extracted_preview(void)
     SetWindowTextW(g_app.previewInfo, info);
 }
 
+/* 使用 IFileDialog 选择文件夹：支持指定初始目录，界面与系统一致。 */
+static BOOL pick_folder_dialog(wchar_t *out, size_t capacity)
+{
+    IFileOpenDialog *dialog = NULL;
+    IShellItem *item = NULL;
+    IShellItem *start = NULL;
+    LPWSTR shellPath = NULL;
+    DWORD options = 0;
+    BOOL picked = FALSE;
+
+    if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+                                &IID_IFileOpenDialog, (void **)&dialog)) || !dialog)
+        return FALSE;
+
+    if (SUCCEEDED(dialog->lpVtbl->GetOptions(dialog, &options)))
+        dialog->lpVtbl->SetOptions(dialog, options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+    dialog->lpVtbl->SetTitle(dialog, L"选择要更换图标的文件夹");
+
+    /* 本次运行中已经选过文件夹时，从该文件夹开始；首次打开交给系统默认位置。 */
+    if (g_app.folder[0]) {
+        wchar_t full[PATH_CAP];
+        if (GetFullPathNameW(g_app.folder, PATH_CAP, full, NULL) && full[0] &&
+            SUCCEEDED(SHCreateItemFromParsingName(full, NULL, &IID_IShellItem, (void **)&start)) && start) {
+            dialog->lpVtbl->SetFolder(dialog, start);
+            start->lpVtbl->Release(start);
+        }
+    }
+
+    if (SUCCEEDED(dialog->lpVtbl->Show(dialog, g_app.hwnd)) &&
+        SUCCEEDED(dialog->lpVtbl->GetResult(dialog, &item)) && item) {
+        if (SUCCEEDED(item->lpVtbl->GetDisplayName(item, SIGDN_FILESYSPATH, &shellPath)) && shellPath) {
+            wcsncpy(out, shellPath, capacity - 1);
+            out[capacity - 1] = 0;
+            CoTaskMemFree(shellPath);
+            picked = TRUE;
+        }
+        item->lpVtbl->Release(item);
+    }
+    dialog->lpVtbl->Release(dialog);
+    return picked;
+}
+
 static void choose_folder(void)
 {
-    BROWSEINFOW browse;
-    wchar_t display[260];
     wchar_t path[PATH_CAP];
-    PIDLIST_ABSOLUTE id;
 
-    ZeroMemory(&browse, sizeof(browse));
-    browse.hwndOwner = g_app.hwnd;
-    browse.pszDisplayName = display;
-    browse.lpszTitle = L"选择要更换图标的文件夹";
-    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_NONEWFOLDERBUTTON;
-    id = SHBrowseForFolderW(&browse);
-    if (!id)
+    if (!pick_folder_dialog(path, PATH_CAP) || !path[0])
         return;
-    if (SHGetPathFromIDListW(id, path)) {
-        wcscpy(g_app.folder, path);
-        SetWindowTextW(g_app.folderEdit, g_app.folder);
-        app_log(L"选择文件夹。");
-        update_apply_button();
-    }
-    CoTaskMemFree(id);
+    wcscpy(g_app.folder, path);
+    SetWindowTextW(g_app.folderEdit, g_app.folder);
+    app_log(L"选择文件夹。");
+    update_apply_button();
 }
 
 static void choose_exe(void)
@@ -1125,7 +1190,7 @@ static int run_application(HINSTANCE instance, int show)
     y = work.top + ((work.bottom - work.top) - height) / 2;
 
     g_app.hwnd = CreateWindowExW(
-        0, WINDOW_CLASS, APP_TITLE,
+        0, WINDOW_CLASS, APP_WINDOW_TITLE,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         x, y, width, height, NULL, NULL, instance, NULL);
     if (!g_app.hwnd) {

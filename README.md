@@ -1,7 +1,5 @@
 # 文件夹图标助手 · Folder Icon Tool
 
-该程序使用Kimi V3.1 Pro 和DeepSeek V4.1 Flash 1017开发。
-
 把 Windows 文件夹的图标换成任意 `*.exe` 的图标，让上一层目录里的文件夹一眼就能看出里面装的是什么，而不是只能靠名字区分。
 
 纯 Win32 / C 实现，编译产物是 **约 55 KB 的单文件 EXE**，不依赖 Python、.NET、VC++ 运行库，也不写注册表。
@@ -116,6 +114,10 @@ FolderIconTool.Test.exe --apply <folder> <exe>
 - 所有写入仅位于所选文件夹内：新建 `.FolderIcon\`、写入/更新 `desktop.ini`。
 - 勾选“备份现有设置”时，应用前会把原 `desktop.ini` 与 `icon.ico` 复制到 `.FolderIcon\backup\`。
 - 恢复原样：删除该文件夹内的 `desktop.ini` 和 `.FolderIcon` 目录即可；若原本就有 `desktop.ini`，从 `.FolderIcon\backup\` 复制回去，并去掉文件夹的只读属性。
+
+## 更新记录
+
+- **v1.0.1** — 首个公开版本。支持 EXE 多尺寸图标提取与预览、保留原有 `desktop.ini` 配置、自动备份、系统目录保护；文件夹选择器会记住本次运行上次选中的位置；窗口标题栏显示版本号；已修复连续修改多个文件夹时的闪退，以及 `aDrive.exe` 这类图标组尺寸声明不一致的程序提取失败的问题。
 
 ## 许可证
 
